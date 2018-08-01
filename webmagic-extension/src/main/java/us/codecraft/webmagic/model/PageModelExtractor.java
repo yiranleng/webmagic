@@ -41,7 +41,7 @@ class PageModelExtractor {
 
     private List<FieldExtractor> fieldExtractors;
 
-    private Extractor objectExtractor;
+    private Extractor pageExtractor;
 
     private Logger logger = LoggerFactory.getLogger(getClass());
 
@@ -121,31 +121,14 @@ class PageModelExtractor {
         }
         return fieldExtractor;
     }
+    
 
     private FieldExtractor getAnnotationExtractBy(Class clazz, Field field) {
         FieldExtractor fieldExtractor = null;
         ExtractBy extractBy = field.getAnnotation(ExtractBy.class);
         if (extractBy != null) {
             Selector selector = ExtractorUtils.getSelector(extractBy);
-            ExtractBy.Source source0 = extractBy.source();
-            if (extractBy.type()== ExtractBy.Type.JsonPath){
-                source0 = RawText;
-            }
-            FieldExtractor.Source source = null;
-            switch (source0){
-                case RawText:
-                    source = FieldExtractor.Source.RawText;
-                    break;
-                case RawHtml:
-                    source = FieldExtractor.Source.RawHtml;
-                    break;
-                case SelectedHtml:
-                    source =FieldExtractor.Source.Html;
-                    break;
-                default:
-                    source =FieldExtractor.Source.Html;
-
-            }
+            FieldExtractor.Source source = getExtractorSource(extractBy);
 
             fieldExtractor = new FieldExtractor(field, selector, source,
                     extractBy.notNull(), List.class.isAssignableFrom(field.getType()));
@@ -153,6 +136,33 @@ class PageModelExtractor {
         }
         return fieldExtractor;
     }
+    
+    
+    /**
+     * 类型转换
+     * @param source0
+     * @return
+     */
+	private FieldExtractor.Source getExtractorSource(ExtractBy extractBy) {
+		ExtractBy.Source source0 = extractBy.source();
+		FieldExtractor.Source source = null;
+		if (extractBy.type() == ExtractBy.Type.JsonPath) source0 = RawText;
+		switch (source0) {
+		case RawText:
+			source = FieldExtractor.Source.RawText;
+			break;
+		case RawHtml:
+			source = FieldExtractor.Source.RawHtml;
+			break;
+		case SelectedHtml:
+			source = FieldExtractor.Source.Html;
+			break;
+		default:
+			source = FieldExtractor.Source.Html;
+		}
+		return source;
+	}
+    
 
     public static Method getSetterMethod(Class clazz, Field field) {
         String name = "set" + StringUtils.capitalize(field.getName());
@@ -193,40 +203,52 @@ class PageModelExtractor {
         annotation = clazz.getAnnotation(ExtractBy.class);
         if (annotation != null) {
             ExtractBy extractBy = (ExtractBy) annotation;
-            objectExtractor = new Extractor(new XpathSelector(extractBy.value()), Extractor.Source.Html, extractBy.notNull(), extractBy.multi());
+            //wuxiaoxu class 不支持css
+//            pageExtractor = new Extractor(new XpathSelector(extractBy.value()), Extractor.Source.Html, extractBy.notNull(), extractBy.multi());
+            pageExtractor = new Extractor(ExtractorUtils.getSelector(extractBy), getExtractorSource(extractBy), extractBy.notNull(), extractBy.multi());
         }
     }
 
+    
+    /**
+     * 开始处理数据
+     * @param page
+     * @return
+     */
     public Object process(Page page) {
-        boolean matched = false;
-        for (Pattern targetPattern : targetUrlPatterns) {
-            if (targetPattern.matcher(page.getUrl().toString()).matches()) {
-                matched = true;
-            }
-        }
-        if (!matched) {
-            return null;
-        }
-        if (objectExtractor == null) {
-            return processSingle(page, null, true);
-        } else {
-            if (objectExtractor.multi) {
-                List<Object> os = new ArrayList<Object>();
-                List<String> list = objectExtractor.getSelector().selectList(page.getRawText());
-                for (String s : list) {
-                    Object o = processSingle(page, s, false);
-                    if (o != null) {
-                        os.add(o);
-                    }
+    	if (!isMatch(page, targetUrlPatterns)) return null;
+        if (null == pageExtractor) return processSingle(page, null, true);
+
+        if (pageExtractor.multi) {
+            List<Object> os = new ArrayList<Object>();
+            List<String> list = pageExtractor.getSelector().selectList(page.getRawText());
+            for (String s : list) {
+                Object o = processSingle(page, s, false);
+                if (o != null) {
+                    os.add(o);
                 }
-                return os;
-            } else {
-                String select = objectExtractor.getSelector().select(page.getRawText());
-                Object o = processSingle(page, select, false);
-                return o;
             }
-        }
+            return os;
+        } 
+        String select = pageExtractor.getSelector().select(page.getRawText());
+        Object o = processSingle(page, select, false);
+        return o;
     }
+    
+    
+    /**
+     * 检查当前html页面url是否符合urlpattern
+     * @param page
+     * @param targetUrlPatterns
+     * @return
+     */
+	public boolean isMatch(Page page, List<Pattern> targetUrlPatterns) {
+		for (Pattern targetPattern : targetUrlPatterns) {
+			if (!targetPattern.matcher(page.getUrl().toString()).matches()) continue;
+			return true;
+		}
+		return false;
+	}
 
     private Object processSingle(Page page, String html, boolean isRaw) {
         Object o = null;
@@ -234,70 +256,9 @@ class PageModelExtractor {
             o = clazz.newInstance();
             for (FieldExtractor fieldExtractor : fieldExtractors) {
                 if (fieldExtractor.isMulti()) {
-                    List<String> value;
-                    switch (fieldExtractor.getSource()) {
-                        case RawHtml:
-                            value = page.getHtml().selectDocumentForList(fieldExtractor.getSelector());
-                            break;
-                        case Html:
-                            if (isRaw) {
-                                value = page.getHtml().selectDocumentForList(fieldExtractor.getSelector());
-                            } else {
-                                value = fieldExtractor.getSelector().selectList(html);
-                            }
-                            break;
-                        case Url:
-                            value = fieldExtractor.getSelector().selectList(page.getUrl().toString());
-                            break;
-                        case RawText:
-                            value = fieldExtractor.getSelector().selectList(page.getRawText());
-                            break;
-                        default:
-                            value = fieldExtractor.getSelector().selectList(html);
-                    }
-                    if ((value == null || value.size() == 0) && fieldExtractor.isNotNull()) {
-                        return null;
-                    }
-                    if (fieldExtractor.getObjectFormatter() != null) {
-                        List<Object> converted = convert(value, fieldExtractor.getObjectFormatter());
-                        setField(o, fieldExtractor, converted);
-                    } else {
-                        setField(o, fieldExtractor, value);
-                    }
+                	o = parseMultiField(fieldExtractor, page, html, isRaw, o);
                 } else {
-                    String value;
-                    switch (fieldExtractor.getSource()) {
-                        case RawHtml:
-                            value = page.getHtml().selectDocument(fieldExtractor.getSelector());
-                            break;
-                        case Html:
-                            if (isRaw) {
-                                value = page.getHtml().selectDocument(fieldExtractor.getSelector());
-                            } else {
-                                value = fieldExtractor.getSelector().select(html);
-                            }
-                            break;
-                        case Url:
-                            value = fieldExtractor.getSelector().select(page.getUrl().toString());
-                            break;
-                        case RawText:
-                            value = fieldExtractor.getSelector().select(page.getRawText());
-                            break;
-                        default:
-                            value = fieldExtractor.getSelector().select(html);
-                    }
-                    if (value == null && fieldExtractor.isNotNull()) {
-                        return null;
-                    }
-                    if (fieldExtractor.getObjectFormatter() != null) {
-                        Object converted = convert(value, fieldExtractor.getObjectFormatter());
-                        if (converted == null && fieldExtractor.isNotNull()) {
-                            return null;
-                        }
-                        setField(o, fieldExtractor, converted);
-                    } else {
-                        setField(o, fieldExtractor, value);
-                    }
+                	o = parseField(fieldExtractor, page, html, isRaw, o);
                 }
             }
             if (AfterExtractor.class.isAssignableFrom(clazz)) {
@@ -312,6 +273,102 @@ class PageModelExtractor {
         }
         return o;
     }
+    
+    
+    /**
+     * 解析list类型的属性数据
+     * @param fieldExtractor
+     * @param page
+     * @param html
+     * @param isRaw
+     * @param o
+     * @return
+     * @throws IllegalAccessException
+     * @throws InvocationTargetException
+     */
+    private Object parseMultiField(FieldExtractor fieldExtractor, Page page, String html, boolean isRaw , Object o) throws IllegalAccessException, InvocationTargetException{
+        List<String> value;
+        switch (fieldExtractor.getSource()) {
+            case RawHtml:
+                value = page.getHtml().selectDocumentForList(fieldExtractor.getSelector());
+                break;
+            case Html:
+                if (isRaw) {
+                    value = page.getHtml().selectDocumentForList(fieldExtractor.getSelector());
+                } else {
+                    value = fieldExtractor.getSelector().selectList(html);
+                }
+                break;
+            case Url:
+                value = fieldExtractor.getSelector().selectList(page.getUrl().toString());
+                break;
+            case RawText:
+                value = fieldExtractor.getSelector().selectList(page.getRawText());
+                break;
+            default:
+                value = fieldExtractor.getSelector().selectList(html);
+        }
+        if ((value == null || value.size() == 0) && fieldExtractor.isNotNull()) {
+            return null;
+        }
+        if (fieldExtractor.getObjectFormatter() != null) {
+            List<Object> converted = convert(value, fieldExtractor.getObjectFormatter());
+            setField(o, fieldExtractor, converted);
+        } else {
+            setField(o, fieldExtractor, value);
+        }
+        return o;
+    }
+    
+    /**
+     * 解析单个类型的属性数据
+     * @param fieldExtractor
+     * @param page
+     * @param html
+     * @param isRaw
+     * @param o
+     * @return
+     * @throws IllegalAccessException
+     * @throws InvocationTargetException
+     */
+    private Object parseField(FieldExtractor fieldExtractor, Page page, String html, boolean isRaw , Object o) throws IllegalAccessException, InvocationTargetException{
+        String value;
+        switch (fieldExtractor.getSource()) {
+            case RawHtml:
+                value = page.getHtml().selectDocument(fieldExtractor.getSelector());
+                break;
+            case Html:
+                if (isRaw) {
+                    value = page.getHtml().selectDocument(fieldExtractor.getSelector());
+                } else {
+                    value = fieldExtractor.getSelector().select(html);
+                }
+                break;
+            case Url:
+                value = fieldExtractor.getSelector().select(page.getUrl().toString());
+                break;
+            case RawText:
+                value = fieldExtractor.getSelector().select(page.getRawText());
+                break;
+            default:
+                value = fieldExtractor.getSelector().select(html);
+        }
+        if (value == null && fieldExtractor.isNotNull()) {
+            return null;
+        }
+        if (fieldExtractor.getObjectFormatter() != null) {
+            Object converted = convert(value, fieldExtractor.getObjectFormatter());
+            if (converted == null && fieldExtractor.isNotNull()) {
+                return null;
+            }
+            setField(o, fieldExtractor, converted);
+        } else {
+            setField(o, fieldExtractor, value);
+        }
+    	return o;
+    }
+    
+    
 
     private Object convert(String value, ObjectFormatter objectFormatter) {
         try {

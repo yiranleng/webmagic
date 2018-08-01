@@ -16,6 +16,7 @@ public interface Selector {
      *
      * @param text text
      * @return result
+     * wuxiaoxu 应该返回对象类型select
      */
     public String select(String text);
 
@@ -26,5 +27,7 @@ public interface Selector {
      * @return results
      */
     public List<String> selectList(String text);
+
+//    public List<ElementNode> selectList(ElementNode node);
 
 }
